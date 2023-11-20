@@ -1510,6 +1510,7 @@
      * timeout is not created.
      */
     timeout: 0,
+    myNewTimeout: [],
     xsrfCookieName: 'XSRF-TOKEN',
     xsrfHeaderName: 'X-XSRF-TOKEN',
     maxContentLength: -1,

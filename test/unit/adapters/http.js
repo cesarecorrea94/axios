@@ -1,27 +1,28 @@
-import axios from '../../../index.js';
+import { AbortController } from 'abortcontroller-polyfill/dist/cjs-ponyfill.js';
+import assert from 'assert';
+import bodyParser from 'body-parser';
+import devNull from 'dev-null';
+import express from 'express';
+import FormDataLegacy from 'form-data';
+import { Blob as BlobPolyfill, File as FilePolyfill, FormData as FormDataPolyfill } from 'formdata-node';
+import formidable from 'formidable';
+import fs from 'fs';
 import http from 'http';
 import https from 'https';
-import net from 'net';
-import url from 'url';
-import zlib from 'zlib';
-import stream from 'stream';
-import util from 'util';
-import assert from 'assert';
-import fs from 'fs';
-import path from 'path';
-let server, proxy;
-import AxiosError from '../../../lib/core/AxiosError.js';
-import FormDataLegacy from 'form-data';
-import formidable from 'formidable';
-import express from 'express';
 import multer from 'multer';
-import bodyParser from 'body-parser';
+import net from 'net';
+import dns from 'node:dns';
+import path from 'path';
+import stream from 'stream';
+import { Throttle } from 'stream-throttle';
+import url from 'url';
+import util from 'util';
+import zlib from 'zlib';
+import axios from '../../../index.js';
+import { __setProxy } from "../../../lib/adapters/http.js";
+import AxiosError from '../../../lib/core/AxiosError.js';
+let server, proxy;
 const isBlobSupported = typeof Blob !== 'undefined';
-import {Throttle} from 'stream-throttle';
-import devNull from 'dev-null';
-import {AbortController} from 'abortcontroller-polyfill/dist/cjs-ponyfill.js';
-import {__setProxy} from "../../../lib/adapters/http.js";
-import {FormData as FormDataPolyfill, Blob as BlobPolyfill, File as FilePolyfill} from 'formdata-node';
 
 const FormDataSpecCompliant = typeof FormData !== 'undefined' ? FormData : FormDataPolyfill;
 const BlobSpecCompliant = typeof Blob !== 'undefined' ? Blob : BlobPolyfill;
@@ -270,6 +271,163 @@ describe('supports http with nodejs', function () {
         done();
       }, 300);
     });
+  });
+
+  context.only('different use cases for timeout configuration (without env variables)', () => {
+    const enumTestResult = {
+      SUCCEEDED: 'SUCCEEDED',
+      FAILED: 'FAILED',
+      PENDING: 'PENDING',
+    };
+    const hasSucceeded = function ({ testResult, error, done }) {
+      assert.equal(testResult, enumTestResult.SUCCEEDED, 'request should succeed');
+      assert.equal(error, undefined);
+      done();
+    };
+    const hasFailed = function ({ testResult, error, done }, expectedError) {
+      assert.equal(testResult, enumTestResult.FAILED, 'request should fail');
+      for (const [key, expected] of Object.entries(expectedError)) {
+        assert.equal(error[key], expected);
+      }
+      done();
+    };
+
+    const bufferTime = 3;
+    const timeSpan = {
+      roundTripTime: 20 * bufferTime,
+      serverProcessing: 30 * bufferTime,
+    };
+    const totalPackets = 6;
+    class EventSchedule {
+      static eventSequence = ['socket', 'connect', 'response', 'end'];
+      constructor() {
+        this['socket'] = Date.now();
+        this['connect'] = this['socket'] + timeSpan.roundTripTime;
+        this['response'] = // response headers
+          this['connect'] +
+          timeSpan.roundTripTime +
+          timeSpan.serverProcessing;
+        this['end'] = // response body
+          this['response'] +
+          (totalPackets - 1) * timeSpan.roundTripTime;
+      }
+    }
+    const ref = new EventSchedule();
+
+    const succeedValidator = (context) => {
+      setTimeout(() => hasSucceeded(context), ref.end - ref.socket + bufferTime);
+    }
+    const failValidatorFactory = (causeIdx = 0, failedBy = undefined) =>
+      function failValidator(context) {
+        const relatedConfig = this.myNewTimeout[causeIdx];
+        failedBy = failedBy || relatedConfig.event;
+        const timeToFail = context.schedule[failedBy];
+        const expectedError = { code: 'ETIMEDOUT', message: `timeout of ${relatedConfig.timeout}ms exceeded` };
+        setTimeout(() => hasFailed(context, expectedError), timeToFail - Date.now());
+      }
+
+    const useCaseList = [
+      {
+        description: 'should <resolve> a request when a <connect> timeout is set and <not exceeded>',
+        myNewTimeout: [{ event: 'connect', timeout: ref.connect - ref.socket + bufferTime }],
+        validator: succeedValidator,
+      },
+      {
+        description: 'should <fail> a request when a <connect> timeout is set and <exceeded>',
+        myNewTimeout: [{ event: 'connect', timeout: ref.connect - ref.socket - bufferTime }],
+        validator: failValidatorFactory(),
+      },
+      {
+        description: 'should <resolve> a request when a <connect to response> timeout is set and <not exceeded>',
+        myNewTimeout: [{ event: 'response', timeout: ref.response - ref.connect + bufferTime, trigger: 'connect' }],
+        validator: succeedValidator,
+      },
+      {
+        description: 'should <fail> a request when a <connect to response> timeout is set and <exceeded>',
+        myNewTimeout: [{ event: 'response', timeout: ref.response - ref.connect - bufferTime, trigger: 'connect' }],
+        validator: failValidatorFactory(),
+      },
+      {
+        description: 'should <resolve> a request when a <response to end> timeout is set and <not exceeded>',
+        myNewTimeout: [{ event: 'end', timeout: ref.end - ref.response + bufferTime, trigger: 'response' }],
+        validator: succeedValidator,
+      },
+      {
+        description: 'should <fail> a request when a <response to end> timeout is set and <exceeded>',
+        myNewTimeout: [{ event: 'end', timeout: ref.end - ref.response - bufferTime, trigger: 'response' }],
+        validator: failValidatorFactory(),
+      },
+      {
+        description: 'should <resolve> a request when a <connect to end> timeout is set and <not exceeded>',
+        myNewTimeout: [{ event: 'end', timeout: ref.end - ref.connect + bufferTime, trigger: 'connect' }],
+        validator: succeedValidator,
+      },
+      {
+        description: 'should <fail> a request when a <connect to end> timeout is set and <exceeded>',
+        myNewTimeout: [{ event: 'end', timeout: ref.end - ref.connect - bufferTime, trigger: 'connect' }],
+        validator: failValidatorFactory(),
+      },
+      {
+        description: 'should <fail> a request when a <socket to end> timeout is set and <exceeded>',
+        myNewTimeout: [{ event: 'end', timeout: ref.end - ref.connect + bufferTime, trigger: 'socket' }],
+        validator: failValidatorFactory(),
+      },
+      {
+        description: 'should <resolve> a request when a <post-response inactivity> timeout is set and <not exceeded>',
+        myNewTimeout: [{ event: 'timeout', timeout: timeSpan.roundTripTime + bufferTime, trigger: 'response' }],
+        validator: succeedValidator,
+      },
+      {
+        description: 'should <fail> a request when a <post-connect inactivity> timeout is set and <exceeded>',
+        myNewTimeout: [{ event: 'timeout', timeout: timeSpan.roundTripTime + bufferTime, trigger: 'connect' }],
+        validator: failValidatorFactory(0, 'response'),
+      },
+      {
+        description: 'should <resolve> a request when a <post-connect inactivity> timeout is set and <not exceeded>',
+        myNewTimeout: [{ event: 'timeout', timeout: ref.response - ref.connect + bufferTime, trigger: 'connect' }],
+        validator: succeedValidator,
+      }
+    ]
+
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    [...useCaseList,...useCaseList,...useCaseList].forEach(useCase => {
+      it(useCase.description, function (done) {
+        let schedule;
+        server = http.createServer(async function (req, res) {
+          await sleep(schedule.response - Date.now());
+          res.write('data');
+          for (let packets = 1; packets < totalPackets; ++packets) {
+            const latency = Math.round(
+              (schedule.end - Date.now()) /
+              (totalPackets - packets)
+            );
+            await sleep(latency);
+            res.write('data');
+          }
+          res.end();
+        }).listen(4444, function () {
+          const context = {
+            testResult: enumTestResult.PENDING,
+            error: undefined,
+            done,
+            schedule,
+          };
+          axios.get('http://localhost:4444/', {
+            myNewTimeout: useCase.myNewTimeout,
+            lookup: (...args) => {
+              context.schedule = (schedule = new EventSchedule());
+              setTimeout(() => dns.lookup(...args), schedule.connect - Date.now()); // simulating connect time
+            },
+          }).then(function (res) {
+            context.testResult = enumTestResult.SUCCEEDED;
+          }).catch(function (err) {
+            context.testResult = enumTestResult.FAILED;
+            context.error = err;
+          });
+          useCase.validator(context);
+        });
+      });
+    })
   });
 
   it('should allow passing JSON', function (done) {
