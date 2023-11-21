@@ -279,6 +279,10 @@ describe('supports http with nodejs', function () {
       FAILED: 'FAILED',
       PENDING: 'PENDING',
     };
+    const isInProgress = function ({ testResult, error }) {
+      assert.equal(testResult, enumTestResult.PENDING, 'request should be in progress');
+      assert.equal(error, undefined);
+    };
     const hasSucceeded = function ({ testResult, error, done }) {
       assert.equal(testResult, enumTestResult.SUCCEEDED, 'request should succeed');
       assert.equal(error, undefined);
@@ -292,101 +296,113 @@ describe('supports http with nodejs', function () {
       done();
     };
 
-    const bufferTime = 3;
+    const bufferTime = 4;
     const timeSpan = {
-      roundTripTime: 20 * bufferTime,
-      serverProcessing: 30 * bufferTime,
+      roundTripTime: 6 * bufferTime,
+      serverProcessing: 6 * bufferTime,
     };
     const totalPackets = 6;
     class EventSchedule {
-      static eventSequence = ['socket', 'connect', 'response', 'end'];
+      static eventSequence = [
+        'socket',
+        // 'lookup',
+        'connect',
+        'response', // response headers
+        'end' // response body
+      ];
+      static intervalTillEvent = {
+        'socket': 0,
+        // 'lookup': ...,
+        'connect': timeSpan.roundTripTime, // till connect
+        'response': timeSpan.roundTripTime + timeSpan.serverProcessing, // till response
+        'end': (totalPackets - 1) * timeSpan.roundTripTime // till end
+      }
       constructor() {
-        this['socket'] = Date.now();
-        this['connect'] = this['socket'] + timeSpan.roundTripTime;
-        this['response'] = // response headers
-          this['connect'] +
-          timeSpan.roundTripTime +
-          timeSpan.serverProcessing;
-        this['end'] = // response body
-          this['response'] +
-          (totalPackets - 1) * timeSpan.roundTripTime;
+        const { intervalTillEvent, eventSequence } = EventSchedule;
+        let lastEvent = 'request';
+        this[lastEvent] = Date.now();
+        eventSequence.forEach((event) => {
+          this[event] = this[lastEvent] + intervalTillEvent[event];
+          lastEvent = event;
+        })
       }
     }
-    const ref = new EventSchedule();
-
+    
     const succeedValidator = (context) => {
-      setTimeout(() => hasSucceeded(context), ref.end - ref.socket + bufferTime);
+      const { end: endAt, request: requestAt } = context.schedule;
+      const requestLifeSpan = endAt - requestAt;
+      setTimeout(() => isInProgress(context), requestLifeSpan - bufferTime);
+      setTimeout(() => hasSucceeded(context), requestLifeSpan + bufferTime);
     }
-    const failValidatorFactory = (causeIdx = 0, failedBy = undefined) =>
+    const failValidatorFactory = (timeoutRefPoint = undefined) =>
       function failValidator(context) {
-        const relatedConfig = this.myNewTimeout[causeIdx];
-        failedBy = failedBy || relatedConfig.event;
-        const timeToFail = context.schedule[failedBy];
-        const expectedError = { code: 'ETIMEDOUT', message: `timeout of ${relatedConfig.timeout}ms exceeded` };
-        setTimeout(() => hasFailed(context, expectedError), timeToFail - Date.now());
+        const { trigger, timeout } = this.myNewTimeout[0];
+        timeoutRefPoint ||= trigger;
+        const { request: requestAt, [timeoutRefPoint]: timeoutRefPointAt } = context.schedule;
+        const requestLifeSpan = timeoutRefPointAt + timeout - requestAt;
+        setTimeout(() => isInProgress(context), requestLifeSpan - bufferTime);
+        const expectedError = { code: 'ETIMEDOUT', message: `timeout of ${timeout}ms exceeded` };
+        setTimeout(() => hasFailed(context, expectedError), requestLifeSpan + bufferTime);
       }
 
+    const auxSchedule = new EventSchedule();
+    const shouldResolveAndFail = (config) => {
+      const trigger = config.trigger || 'socket';
+      const { [config.event]: eventAt, [trigger]: triggerAt } = auxSchedule;
+      const raceInterval = eventAt - triggerAt;
+      const toutName = config.trigger ? `${config.trigger} to ${config.event}` : config.event;
+      return [{
+        description: `should <resolve> a request when a <${toutName}> timeout is set and <not exceeded>`,
+        myNewTimeout: [{ ...config, timeout: raceInterval + bufferTime }],
+        validator: succeedValidator,
+      }, {
+        description: `should <fail> a request when a <${toutName}> timeout is set and <exceeded>`,
+        myNewTimeout: [{ ...config, timeout: raceInterval - bufferTime }],
+        validator: failValidatorFactory(),
+      }];
+    }
+    const resolveAndFailForInactivity = (config, timeoutCases) => {
+      const toutName = `post-${config.trigger || 'socket'} inactivity`;
+      return timeoutCases.map(({ timeout, lastSignal }) => {
+        if (lastSignal) {
+          return {
+            description: `should <fail> a request when a <${toutName}> timeout is set and <exceeded>`,
+            myNewTimeout: [{ ...config, timeout  }],
+            validator: failValidatorFactory(lastSignal),
+          };
+        }
+        return {
+          description: `should <resolve> a request when a <${toutName}> timeout is set and <not exceeded>`,
+          myNewTimeout: [{ ...config, timeout }],
+          validator: succeedValidator,
+        }
+      });
+    }
     const useCaseList = [
-      {
-        description: 'should <resolve> a request when a <connect> timeout is set and <not exceeded>',
-        myNewTimeout: [{ event: 'connect', timeout: ref.connect - ref.socket + bufferTime }],
-        validator: succeedValidator,
-      },
-      {
-        description: 'should <fail> a request when a <connect> timeout is set and <exceeded>',
-        myNewTimeout: [{ event: 'connect', timeout: ref.connect - ref.socket - bufferTime }],
-        validator: failValidatorFactory(),
-      },
-      {
-        description: 'should <resolve> a request when a <connect to response> timeout is set and <not exceeded>',
-        myNewTimeout: [{ event: 'response', timeout: ref.response - ref.connect + bufferTime, trigger: 'connect' }],
-        validator: succeedValidator,
-      },
-      {
-        description: 'should <fail> a request when a <connect to response> timeout is set and <exceeded>',
-        myNewTimeout: [{ event: 'response', timeout: ref.response - ref.connect - bufferTime, trigger: 'connect' }],
-        validator: failValidatorFactory(),
-      },
-      {
-        description: 'should <resolve> a request when a <response to end> timeout is set and <not exceeded>',
-        myNewTimeout: [{ event: 'end', timeout: ref.end - ref.response + bufferTime, trigger: 'response' }],
-        validator: succeedValidator,
-      },
-      {
-        description: 'should <fail> a request when a <response to end> timeout is set and <exceeded>',
-        myNewTimeout: [{ event: 'end', timeout: ref.end - ref.response - bufferTime, trigger: 'response' }],
-        validator: failValidatorFactory(),
-      },
-      {
-        description: 'should <resolve> a request when a <connect to end> timeout is set and <not exceeded>',
-        myNewTimeout: [{ event: 'end', timeout: ref.end - ref.connect + bufferTime, trigger: 'connect' }],
-        validator: succeedValidator,
-      },
-      {
-        description: 'should <fail> a request when a <connect to end> timeout is set and <exceeded>',
-        myNewTimeout: [{ event: 'end', timeout: ref.end - ref.connect - bufferTime, trigger: 'connect' }],
-        validator: failValidatorFactory(),
-      },
-      {
-        description: 'should <fail> a request when a <socket to end> timeout is set and <exceeded>',
-        myNewTimeout: [{ event: 'end', timeout: ref.end - ref.connect + bufferTime, trigger: 'socket' }],
-        validator: failValidatorFactory(),
-      },
-      {
-        description: 'should <resolve> a request when a <post-response inactivity> timeout is set and <not exceeded>',
-        myNewTimeout: [{ event: 'timeout', timeout: timeSpan.roundTripTime + bufferTime, trigger: 'response' }],
-        validator: succeedValidator,
-      },
-      {
-        description: 'should <fail> a request when a <post-connect inactivity> timeout is set and <exceeded>',
-        myNewTimeout: [{ event: 'timeout', timeout: timeSpan.roundTripTime + bufferTime, trigger: 'connect' }],
-        validator: failValidatorFactory(0, 'response'),
-      },
-      {
-        description: 'should <resolve> a request when a <post-connect inactivity> timeout is set and <not exceeded>',
-        myNewTimeout: [{ event: 'timeout', timeout: ref.response - ref.connect + bufferTime, trigger: 'connect' }],
-        validator: succeedValidator,
-      }
+      ...shouldResolveAndFail({ event: 'connect', trigger: 'socket' }),
+      ...shouldResolveAndFail({ event: 'response', trigger: 'socket' }),
+      ...shouldResolveAndFail({ event: 'response', trigger: 'connect' }),
+      ...shouldResolveAndFail({ event: 'end', trigger: 'socket' }),
+      ...shouldResolveAndFail({ event: 'end', trigger: 'connect' }),
+      ...shouldResolveAndFail({ event: 'end', trigger: 'response' }),
+      ...resolveAndFailForInactivity({ event: 'timeout', trigger: 'socket' }, [
+        { timeout: EventSchedule.intervalTillEvent.response + bufferTime },
+        { timeout: EventSchedule.intervalTillEvent.response - bufferTime, lastSignal: 'connect' },
+        { timeout: EventSchedule.intervalTillEvent.connect + bufferTime, lastSignal: 'connect' },
+        { timeout: EventSchedule.intervalTillEvent.connect - bufferTime, lastSignal: 'socket' }, // in the real world, lastSignal would be 'lookup'
+      ]),
+      ...resolveAndFailForInactivity({ event: 'timeout', trigger: 'connect' }, [
+        { timeout: EventSchedule.intervalTillEvent.response + bufferTime },
+        { timeout: EventSchedule.intervalTillEvent.response - bufferTime, lastSignal: 'connect' },
+        { timeout: EventSchedule.intervalTillEvent.connect + bufferTime, lastSignal: 'connect' },
+        { timeout: EventSchedule.intervalTillEvent.connect - bufferTime, lastSignal: 'connect' },
+      ]),
+      ...resolveAndFailForInactivity({ event: 'timeout', trigger: 'response' }, [
+        { timeout: EventSchedule.intervalTillEvent.response + bufferTime },
+        { timeout: EventSchedule.intervalTillEvent.response - bufferTime },
+        { timeout: EventSchedule.intervalTillEvent.connect + bufferTime },
+        { timeout: EventSchedule.intervalTillEvent.connect - bufferTime, lastSignal: 'response' },
+      ]),
     ]
 
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

@@ -313,7 +313,7 @@ export type LookupAddress = string | LookupAddressEntry;
 
 type IReqEventSeq = ['socket', 'lookup', 'connect', 'response', 'end'];
 export type IAdvancedTimeout = {
-  trigger?: Exclude<IReqEventSeq[number], IReqEventSeq[4]>;
+  trigger?: Exclude<IReqEventSeq[number], 'end'>; // trigger = start signal
   timeout: number;
   event: Exclude<IReqEventSeq[number], IReqEventSeq[0]> | 'timeout';
 };
