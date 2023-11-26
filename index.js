@@ -52,8 +52,8 @@ export {
 //   // var error;
 
 //   axios.get('http://localhost:4444/', {
-//     myNewTimeout: [{ event: 'timeout', timeout: networkLatency, trigger: 'response' }],  
-//     // myNewTimeout: [{ event: 'connect', timeout: 50 }],
+//     advancedTimeout: [{ event: 'timeout', timeout: networkLatency, trigger: 'response' }],  
+//     // advancedTimeout: [{ event: 'connect', timeout: 50 }],
 //     lookup: (...args) =>  {
 //       setTimeout(() => dns.lookup(...args), networkLatency); // simulating connect time
 //     }

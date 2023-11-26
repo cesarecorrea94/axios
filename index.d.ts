@@ -330,7 +330,7 @@ export interface AxiosRequestConfig<D = any> {
   data?: D;
   timeout?: Milliseconds;
   timeoutErrorMessage?: string;
-  myNewTimeout?: IAdvancedTimeout[];
+  advancedTimeout?: IAdvancedTimeout[];
   withCredentials?: boolean;
   adapter?: AxiosAdapterConfig | AxiosAdapterConfig[];
   auth?: AxiosBasicCredentials;

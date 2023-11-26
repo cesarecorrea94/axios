@@ -273,7 +273,7 @@ describe('supports http with nodejs', function () {
     });
   });
 
-  context.only('different use cases for timeout configuration (without env variables)', () => {
+  context.only('different test cases for advanced timeout configuration', () => {
     const enumTestResult = {
       SUCCEEDED: 'SUCCEEDED',
       FAILED: 'FAILED',
@@ -298,31 +298,31 @@ describe('supports http with nodejs', function () {
 
     const bufferTime = 4;
     const timeSpan = {
-      roundTripTime: 6 * bufferTime,
-      serverProcessing: 6 * bufferTime,
+      roundTripTime: 3 * bufferTime,
+      serverProcessing: 3 * bufferTime,
     };
-    const totalPackets = 6;
+    const totalPackets = 4;
     class EventSchedule {
       static eventSequence = [
         'socket',
-        // 'lookup',
+        'lookup',
         'connect',
-        'response', // response headers
-        'end' // response body
+        'response',
+        'end'
       ];
-      static intervalTillEvent = {
-        'socket': 0,
-        // 'lookup': ...,
-        'connect': timeSpan.roundTripTime, // till connect
-        'response': timeSpan.roundTripTime + timeSpan.serverProcessing, // till response
-        'end': (totalPackets - 1) * timeSpan.roundTripTime // till end
+      static inbetweenIntervalTillEvent = {
+        'socket': 1,
+        'lookup': timeSpan.roundTripTime, // simulating connect time
+        'connect': 1,
+        'response': timeSpan.roundTripTime + timeSpan.serverProcessing,
+        'end': (totalPackets - 1) * timeSpan.roundTripTime
       }
       constructor() {
-        const { intervalTillEvent, eventSequence } = EventSchedule;
+        const { inbetweenIntervalTillEvent: intervalTill, eventSequence } = EventSchedule;
         let lastEvent = 'request';
         this[lastEvent] = Date.now();
         eventSequence.forEach((event) => {
-          this[event] = this[lastEvent] + intervalTillEvent[event];
+          this[event] = this[lastEvent] + intervalTill[event];
           lastEvent = event;
         })
       }
@@ -331,83 +331,90 @@ describe('supports http with nodejs', function () {
     const succeedValidator = (context) => {
       const { end: endAt, request: requestAt } = context.schedule;
       const requestLifeSpan = endAt - requestAt;
-      setTimeout(() => isInProgress(context), requestLifeSpan - bufferTime);
-      setTimeout(() => hasSucceeded(context), requestLifeSpan + bufferTime);
+      setTimeout(() => {
+        isInProgress(context);
+        setTimeout(() => hasSucceeded(context), 2 * bufferTime);
+      }, requestLifeSpan - bufferTime);
     }
     const failValidatorFactory = (timeoutRefPoint = undefined) =>
       function failValidator(context) {
-        const { trigger, timeout } = this.myNewTimeout[0];
-        timeoutRefPoint ||= trigger;
+        const { startShot, timeout } = this.advancedTimeout[0];
+        timeoutRefPoint = timeoutRefPoint || startShot || 'socket';
         const { request: requestAt, [timeoutRefPoint]: timeoutRefPointAt } = context.schedule;
         const requestLifeSpan = timeoutRefPointAt + timeout - requestAt;
-        setTimeout(() => isInProgress(context), requestLifeSpan - bufferTime);
+        setTimeout(() => {
+          isInProgress(context);
+          setTimeout(() => hasFailed(context, expectedError), 2 * bufferTime);
+        }, requestLifeSpan - bufferTime);
         const expectedError = { code: 'ETIMEDOUT', message: `timeout of ${timeout}ms exceeded` };
-        setTimeout(() => hasFailed(context, expectedError), requestLifeSpan + bufferTime);
       }
 
-    const auxSchedule = new EventSchedule();
-    const shouldResolveAndFail = (config) => {
-      const trigger = config.trigger || 'socket';
-      const { [config.event]: eventAt, [trigger]: triggerAt } = auxSchedule;
-      const raceInterval = eventAt - triggerAt;
-      const toutName = config.trigger ? `${config.trigger} to ${config.event}` : config.event;
+    const scheduleAux = new EventSchedule();
+    const mountTestCases = (config) => {
+      const { startShot = 'socket', finishLine } = config;
+      const { [finishLine]: finishLineAt, [startShot]: startShotAt } = scheduleAux;
+      const raceInterval = finishLineAt - startShotAt;
+      const timeoutName = `${(startShot ? `${startShot} to ` : '').padStart(14)}${finishLine.padEnd(10)}`;
       return [{
-        description: `should <resolve> a request when a <${toutName}> timeout is set and <not exceeded>`,
-        myNewTimeout: [{ ...config, timeout: raceInterval + bufferTime }],
+        description: `should <resolve> a request when a <${timeoutName}> timeout is set and <not exceeded>`,
+        advancedTimeout: [{ ...config, timeout: raceInterval + bufferTime }],
         validator: succeedValidator,
       }, {
-        description: `should <fail> a request when a <${toutName}> timeout is set and <exceeded>`,
-        myNewTimeout: [{ ...config, timeout: raceInterval - bufferTime }],
+        description: `should < fail  > a request when a <${timeoutName}> timeout is set and <    exceeded>`,
+        advancedTimeout: [{ ...config, timeout: raceInterval - bufferTime }],
         validator: failValidatorFactory(),
       }];
     }
-    const resolveAndFailForInactivity = (config, timeoutCases) => {
-      const toutName = `post-${config.trigger || 'socket'} inactivity`;
+    const mountActivityTestCases = (startShot, timeoutCases) => {
+      const timeoutName = `post-${(startShot || 'socket').padEnd(8)} activity`.padStart(24);
       return timeoutCases.map(({ timeout, lastSignal }) => {
         if (lastSignal) {
           return {
-            description: `should <fail> a request when a <${toutName}> timeout is set and <exceeded>`,
-            myNewTimeout: [{ ...config, timeout  }],
+            description: `should < fail  > a request when a <${timeoutName}> timeout is set and <    exceeded>`,
+            advancedTimeout: [{ startShot, finishLine: 'activity', timeout  }],
             validator: failValidatorFactory(lastSignal),
           };
         }
         return {
-          description: `should <resolve> a request when a <${toutName}> timeout is set and <not exceeded>`,
-          myNewTimeout: [{ ...config, timeout }],
+          description: `should <resolve> a request when a <${timeoutName}> timeout is set and <not exceeded>`,
+          advancedTimeout: [{ startShot, finishLine: 'activity', timeout }],
           validator: succeedValidator,
         }
       });
     }
-    const useCaseList = [
-      ...shouldResolveAndFail({ event: 'connect', trigger: 'socket' }),
-      ...shouldResolveAndFail({ event: 'response', trigger: 'socket' }),
-      ...shouldResolveAndFail({ event: 'response', trigger: 'connect' }),
-      ...shouldResolveAndFail({ event: 'end', trigger: 'socket' }),
-      ...shouldResolveAndFail({ event: 'end', trigger: 'connect' }),
-      ...shouldResolveAndFail({ event: 'end', trigger: 'response' }),
-      ...resolveAndFailForInactivity({ event: 'timeout', trigger: 'socket' }, [
-        { timeout: EventSchedule.intervalTillEvent.response + bufferTime },
-        { timeout: EventSchedule.intervalTillEvent.response - bufferTime, lastSignal: 'connect' },
-        { timeout: EventSchedule.intervalTillEvent.connect + bufferTime, lastSignal: 'connect' },
-        { timeout: EventSchedule.intervalTillEvent.connect - bufferTime, lastSignal: 'socket' }, // in the real world, lastSignal would be 'lookup'
+
+    const { inbetweenIntervalTillEvent: intervalTill } = EventSchedule;
+    const testCaseList = [
+      ...EventSchedule.eventSequence.flatMap(
+        (startShot, idx) => EventSchedule.eventSequence.slice(idx+1).flatMap(
+          (finishLine) => mountTestCases({ startShot, finishLine })
+        )
+      ),
+      ...mountActivityTestCases('socket', [
+        { timeout: intervalTill.response + bufferTime },
+        { timeout: intervalTill.response - bufferTime, lastSignal: 'connect' },
+        { timeout: timeSpan.roundTripTime + bufferTime, lastSignal: 'connect' },
+        { timeout: timeSpan.roundTripTime - bufferTime, lastSignal: 'socket' },
       ]),
-      ...resolveAndFailForInactivity({ event: 'timeout', trigger: 'connect' }, [
-        { timeout: EventSchedule.intervalTillEvent.response + bufferTime },
-        { timeout: EventSchedule.intervalTillEvent.response - bufferTime, lastSignal: 'connect' },
-        { timeout: EventSchedule.intervalTillEvent.connect + bufferTime, lastSignal: 'connect' },
-        { timeout: EventSchedule.intervalTillEvent.connect - bufferTime, lastSignal: 'connect' },
+      ...mountActivityTestCases('connect', [
+        { timeout: intervalTill.response + bufferTime },
+        { timeout: intervalTill.response - bufferTime, lastSignal: 'connect' },
+        { timeout: timeSpan.roundTripTime + bufferTime, lastSignal: 'connect' },
+        { timeout: timeSpan.roundTripTime - bufferTime, lastSignal: 'connect' },
       ]),
-      ...resolveAndFailForInactivity({ event: 'timeout', trigger: 'response' }, [
-        { timeout: EventSchedule.intervalTillEvent.response + bufferTime },
-        { timeout: EventSchedule.intervalTillEvent.response - bufferTime },
-        { timeout: EventSchedule.intervalTillEvent.connect + bufferTime },
-        { timeout: EventSchedule.intervalTillEvent.connect - bufferTime, lastSignal: 'response' },
+      ...mountActivityTestCases('response', [
+        { timeout: intervalTill.response + bufferTime },
+        { timeout: intervalTill.response - bufferTime },
+        { timeout: timeSpan.roundTripTime + bufferTime },
+        { timeout: timeSpan.roundTripTime - bufferTime, lastSignal: 'response' },
       ]),
     ]
 
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-    [...useCaseList,...useCaseList,...useCaseList].forEach(useCase => {
-      it(useCase.description, function (done) {
+    testCaseList.forEach(testCase => {
+      const positiveTimeout = testCase.advancedTimeout[0].timeout > 0;
+      const maybeIt = positiveTimeout ? it : it.skip;
+      maybeIt(testCase.description, function (done) {
         let schedule;
         server = http.createServer(async function (req, res) {
           await sleep(schedule.response - Date.now());
@@ -426,13 +433,13 @@ describe('supports http with nodejs', function () {
             testResult: enumTestResult.PENDING,
             error: undefined,
             done,
-            schedule,
+            schedule: (schedule = new EventSchedule()),
           };
+          testCase.validator(context);
           axios.get('http://localhost:4444/', {
-            myNewTimeout: useCase.myNewTimeout,
+            advancedTimeout: testCase.advancedTimeout,
             lookup: (...args) => {
-              context.schedule = (schedule = new EventSchedule());
-              setTimeout(() => dns.lookup(...args), schedule.connect - Date.now()); // simulating connect time
+              setTimeout(() => dns.lookup(...args), schedule.lookup - Date.now());
             },
           }).then(function (res) {
             context.testResult = enumTestResult.SUCCEEDED;
@@ -440,7 +447,6 @@ describe('supports http with nodejs', function () {
             context.testResult = enumTestResult.FAILED;
             context.error = err;
           });
-          useCase.validator(context);
         });
       });
     })
