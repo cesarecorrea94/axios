@@ -338,15 +338,19 @@ describe('supports http with nodejs', function () {
     }
     const failValidatorFactory = (timeoutRefPoint = undefined) =>
       function failValidator(context) {
-        const { startShot, timeout } = this.advancedTimeout[0];
-        timeoutRefPoint = timeoutRefPoint || startShot || 'socket';
+        const { startShot = 'socket', timeout, finishLine } = this.advancedTimeout[0];
+        timeoutRefPoint = timeoutRefPoint || startShot;
         const { request: requestAt, [timeoutRefPoint]: timeoutRefPointAt } = context.schedule;
         const requestLifeSpan = timeoutRefPointAt + timeout - requestAt;
+        const message =
+          finishLine === 'activity'
+          ? `post-${startShot} activity timeout of ${timeout}ms exceeded`
+          : `${startShot}-to-${finishLine} timeout of ${timeout}ms exceeded`;
+        const expectedError = { code: 'ECONNABORTED', message };
         setTimeout(() => {
           isInProgress(context);
           setTimeout(() => hasFailed(context, expectedError), 2 * bufferTime);
         }, requestLifeSpan - bufferTime);
-        const expectedError = { code: 'ETIMEDOUT', message: `timeout of ${timeout}ms exceeded` };
       }
 
     const scheduleAux = new EventSchedule();
@@ -354,29 +358,29 @@ describe('supports http with nodejs', function () {
       const { startShot = 'socket', finishLine } = config;
       const { [finishLine]: finishLineAt, [startShot]: startShotAt } = scheduleAux;
       const raceInterval = finishLineAt - startShotAt;
-      const timeoutName = `${(startShot ? `${startShot} to ` : '').padStart(14)}${finishLine.padEnd(10)}`;
+      const timeoutName = `${startShot}-to-${finishLine}`;
       return [{
-        description: `should <resolve> a request when a <${timeoutName}> timeout is set and <not exceeded>`,
+        description: `should resolve a request when a ${timeoutName} timeout is set and not exceeded`,
         advancedTimeout: [{ ...config, timeout: raceInterval + bufferTime }],
         validator: succeedValidator,
       }, {
-        description: `should < fail  > a request when a <${timeoutName}> timeout is set and <    exceeded>`,
+        description: `should fail a request when a ${timeoutName} timeout is set and exceeded`,
         advancedTimeout: [{ ...config, timeout: raceInterval - bufferTime }],
         validator: failValidatorFactory(),
       }];
     }
-    const mountActivityTestCases = (startShot, timeoutCases) => {
-      const timeoutName = `post-${(startShot || 'socket').padEnd(8)} activity`.padStart(24);
+    const mountActivityTestCases = (startShot = 'socket', timeoutCases) => {
+      const timeoutName = `post-${startShot} activity`;
       return timeoutCases.map(({ timeout, lastSignal }) => {
         if (lastSignal) {
           return {
-            description: `should < fail  > a request when a <${timeoutName}> timeout is set and <    exceeded>`,
+            description: `should fail a request when a ${timeoutName} timeout is set and exceeded`,
             advancedTimeout: [{ startShot, finishLine: 'activity', timeout  }],
             validator: failValidatorFactory(lastSignal),
           };
         }
         return {
-          description: `should <resolve> a request when a <${timeoutName}> timeout is set and <not exceeded>`,
+          description: `should resolve a request when a ${timeoutName} timeout is set and not exceeded`,
           advancedTimeout: [{ startShot, finishLine: 'activity', timeout }],
           validator: succeedValidator,
         }
