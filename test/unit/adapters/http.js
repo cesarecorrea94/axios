@@ -348,8 +348,8 @@ describe('supports http with nodejs', function () {
         const requestLifeSpan = timeoutRefPointAt + timeout - requestAt;
         const message =
           finishLine === 'activity'
-          ? `post-${startShot} activity timeout of ${timeout}ms exceeded`
-          : `${startShot}-to-${finishLine} timeout of ${timeout}ms exceeded`;
+          ? `Post-${startShot} activity timeout of ${timeout}ms exceeded`
+          : `Timeout between ${startShot} and ${finishLine} of ${timeout}ms exceeded`;
         const expectedError = { code: 'ECONNABORTED', message };
         setTimeout(() => {
           isInProgress(context);
@@ -374,7 +374,7 @@ describe('supports http with nodejs', function () {
       }];
     }
     const mountActivityTestCases = (startShot = 'socket', timeoutCases) => {
-      const timeoutName = `post-${startShot} activity`;
+      const timeoutName = `Post-${startShot} activity`;
       return timeoutCases.map(({ timeout, lastSignal }) => {
         if (lastSignal) {
           return {
