@@ -342,14 +342,15 @@ describe('supports http with nodejs', function () {
     }
     const failValidatorFactory = (timeoutRefPoint = undefined) =>
       function failValidator(context) {
-        const { startShot = 'socket', timeout, finishLine } = this.advancedTimeout[0];
+        const { startShot = 'socket', timeout, finishLine, timeoutErrorMessage } = this.advancedTimeout[0];
         timeoutRefPoint = timeoutRefPoint || startShot;
         const { request: requestAt, [timeoutRefPoint]: timeoutRefPointAt } = context.schedule;
         const requestLifeSpan = timeoutRefPointAt + timeout - requestAt;
         const message =
-          finishLine === 'activity'
-          ? `Post-${startShot} activity timeout of ${timeout}ms exceeded`
-          : `Timeout between ${startShot} and ${finishLine} of ${timeout}ms exceeded`;
+          timeoutErrorMessage ||
+          (finishLine === 'activity'
+            ? `Post-${startShot} activity timeout of ${timeout}ms exceeded`
+            : `Timeout between ${startShot} and ${finishLine} of ${timeout}ms exceeded`);
         const expectedError = { code: 'ECONNABORTED', message };
         setTimeout(() => {
           isInProgress(context);
@@ -416,6 +417,11 @@ describe('supports http with nodejs', function () {
         { timeout: timeSpan.roundTripTime + bufferTime },
         { timeout: timeSpan.roundTripTime - bufferTime, lastSignal: 'response' },
       ]),
+      {
+        description: `should fail due to timeout with a custom error message`,
+        advancedTimeout: [{ finishLine: 'response', timeout: 1, timeoutErrorMessage: 'foobar' }],
+        validator: failValidatorFactory(),
+      }
     ]
 
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
