@@ -291,7 +291,11 @@ describe('supports http with nodejs', function () {
     const hasFailed = function ({ testResult, error, done }, expectedError) {
       assert.equal(testResult, enumTestResult.FAILED, 'request should fail');
       for (const [key, expected] of Object.entries(expectedError)) {
-        assert.equal(error[key], expected);
+        try {
+          assert.equal(error[key], expected);
+        } catch (error) {
+          return done(error);
+        }
       }
       done();
     };
@@ -453,7 +457,88 @@ describe('supports http with nodejs', function () {
           });
         });
       });
-    })
+    });
+    
+    const validConfig = { finishLine: 'activity', timeout: 1000 };
+    const invalidConfigTestCaseList = [
+      {
+        description: 'should fail if `advancedTimeout` is not an array',
+        advancedTimeout: validConfig,
+        errorMessage: '`advancedTimeout` must be an array'
+      },
+      ...[null, validConfig.timeout].map(config => ({
+          description: `should fail if \`config\` is \`${config}\``,
+          advancedTimeout: [config],
+          errorMessage: '`advancedTimeout[0]` must be a non-null object'
+        })
+      ),
+      ...['timeout', 'finishLine'].map(requiredField => ({
+        description: `should fail if \`${requiredField}\` is missing`,
+        advancedTimeout: [{ ...validConfig, [requiredField]: undefined }],
+        errorMessage: `\`advancedTimeout[0].${requiredField}\` is required`
+      })),
+      ...[
+        { timeout: 'abc', isX: 'is not a number' },
+        { timeout: '123', isX: 'is not a strict number' },
+        { timeout: -123, isX: 'is not a positive number' },
+        { timeout: 0, isX: 'is zero' },
+        { timeout: NaN, isX: 'is NaN' }
+      ].map(({ timeout, isX }) => ({
+          description: `should fail if \`timeout\` ${isX}`,
+          advancedTimeout: [{ ...validConfig, timeout }],
+          errorMessage: '`advancedTimeout[0].timeout` must be a positive number'
+        })
+      ),
+      ...['startShot', 'finishLine'].map((eventField) => ({
+          description: `should fail if \`${eventField}\` is not a valid event`,
+          advancedTimeout: [{ ...validConfig, [eventField]: 'foobar' }],
+          errorMessage: `\`advancedTimeout[0].${eventField}\` is not a valid event`
+        })
+      ),
+      {
+        description: "should fail if `startShot` is 'activity'",
+        advancedTimeout: [{ ...validConfig, startShot: 'activity' }],
+        errorMessage: `\`advancedTimeout[0].startShot\` must not be 'activity'`
+      },
+      ...EventSchedule.eventSequence.flatMap((startShot, idx, arr) => {
+        const nonExhaustiveFinishEventList = idx === 0
+          ? [startShot]
+          : arr.slice(idx - 1, idx + 1);
+        return nonExhaustiveFinishEventList.map(finishLine => ({
+            description: `should fail for an incorrect event sequence from ${startShot} to ${finishLine}`,
+            advancedTimeout: [{ startShot, finishLine, timeout: 1000 }],
+            errorMessage: `\`advancedTimeout[0].finishLine\` must occurs after \`advancedTimeout[0].startShot\``,
+          })
+        );
+      }),
+    ];
+    invalidConfigTestCaseList.forEach(testCase => {
+      it(testCase.description, function (done) {
+        server = http.createServer(async function (req, res) {
+          res.end('data');
+        }).listen(4444, function () {
+          const context = {
+            testResult: enumTestResult.PENDING,
+            error: undefined,
+            done,
+          };
+          axios.get('http://localhost:4444/', {
+            advancedTimeout: testCase.advancedTimeout,
+          }).then(function (res) {
+            context.testResult = enumTestResult.SUCCEEDED;
+          }).catch(function (err) {
+            context.testResult = enumTestResult.FAILED;
+            context.error = err;
+          });
+          sleep(10).then(() => {
+            hasFailed(context, {
+              code: 'ERR_BAD_OPTION_VALUE',
+              message: testCase.errorMessage
+            })
+          })
+        });
+      });
+    });
   });
 
   it('should allow passing JSON', function (done) {
