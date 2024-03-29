@@ -460,6 +460,20 @@ These are the available config options for making requests. Only the `url` is re
   // If the request takes longer than `timeout`, the request will be aborted.
   timeout: 1000, // default is `0` (no timeout)
 
+  // `advancedTimeout` allows for the specification of multiple timed events,
+  // starting from a `startShot` event and ending at a `finishEvent`,
+  // with each event pair being constrained by a `timeout` duration (in milliseconds).
+  advancedTimeout: [
+    // [connect timeout] 50 milliseconds to establish a connection
+    { startShot: 'socket',    finishLine: 'connect',  timeout: 50 },
+    // [response status timeout] 1 second to wait for HTTP response status, counting from connection
+    { startShot: 'connect',   finishLine: 'response', timeout: 1000 },
+    // 100 milliseconds timeout between two successive data packets on receiving the response
+    { startShot: 'response',  finishLine: 'activity', timeout: 100 },
+    // [full response timeout] 2 seconds to receive full response, counting from HTTP response status
+    { startShot: 'response',  finishLine: 'end', timeout: 2000 },
+  ],
+
   // `withCredentials` indicates whether or not cross-site Access-Control requests
   // should be made using credentials
   withCredentials: false, // default
