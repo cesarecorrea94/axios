@@ -311,11 +311,22 @@ export interface LookupAddressEntry {
 
 export type LookupAddress = string | LookupAddressEntry;
 
-type AxiosAdvancedTimeoutEventSequence = ['socket', 'lookup', 'connect', 'response', 'end'];
+type AxiosAdvancedTimeoutEventSequence = [
+  'socket',
+  'lookup',
+  'connect',
+  'response',
+  'end'
+];
 export interface AxiosAdvancedTimeout {
   startShot?: Exclude<AxiosAdvancedTimeoutEventSequence[number], 'end'>;
-  timeout: number;
-  finishLine: Exclude<AxiosAdvancedTimeoutEventSequence[number], AxiosAdvancedTimeoutEventSequence[0]> | 'activity';
+  timeout: Milliseconds;
+  finishLine:
+    | Exclude<
+        AxiosAdvancedTimeoutEventSequence[number],
+        AxiosAdvancedTimeoutEventSequence[0]
+      >
+    | 'activity';
   timeoutErrorMessage?: string;
 }
 
